@@ -1,0 +1,22 @@
+# requirements.txt
+
+streamlit
+pandas
+seaborn
+matplotlib
+pycaret[full]
+pandas-profiling
+streamlit-pandas-profiling
+pandasai
+langchain
+langchain_groq
+scikit-learn
+python-dotenv
+shap
+plotly
+
+
+
+
+
+
