@@ -2,21 +2,23 @@ import os
 import re
 import pandas as pd
 import streamlit as st
-import seaborn as sns
-import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
 from dotenv import load_dotenv
 from pycaret.classification import ClassificationExperiment
 from pycaret.regression import RegressionExperiment
 from pycaret.time_series import TSForecastingExperiment
+from pycaret.clustering import ClusteringExperiment
 from pandas_profiling import ProfileReport
 from streamlit_pandas_profiling import st_profile_report
 from pandasai import SmartDataframe
 from langchain_groq import ChatGroq
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler, PolynomialFeatures
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
 from datetime import date
 import warnings
 import shap
-import plotly.express as px
 from sklearn.pipeline import Pipeline
 
 # Suppress warnings
@@ -30,6 +32,7 @@ DATA_FILE = 'dataset.csv'
 PROCESSED_DATA_FILE = 'processed_dataset.csv'
 EXPORT_PATH = 'exports/charts/'
 MODEL_FILE_BASE = f"best_model_{date.today().strftime('%m-%d-%Y')}"
+EXPORT_DATA_FILE = f"exported_data_{date.today().strftime('%m-%d-%Y')}.csv"
 
 # Ensure the export directory exists
 os.makedirs(EXPORT_PATH, exist_ok=True)
@@ -39,14 +42,17 @@ st.session_state.setdefault('data_uploaded', False)
 st.session_state.setdefault('processed_data', False)
 st.session_state.setdefault('model_file', None)
 
-st.set_page_config(layout="wide", page_title="Low/Code-No/Code", page_icon="🤖")
+# Set the page configuration
+st.set_page_config(layout="wide", page_title="Low Code No Code ML App", page_icon="🤖")
+
 
 def setup_sidebar():
     """Setup the sidebar with branding and navigation."""
     with st.sidebar:
         st.image("https://www.onepointltd.com/wp-content/uploads/2020/03/inno2.png")
-        st.title("Low Code No Code Auto ML Predictive Analytics Application")
+        st.title("Low Code No Code Auto ML App")
         st.info("Developed By: Jillani Soft Tech 😎")
+        # Sidebar styling and links
         st.markdown("""
             <style>
             .sidebar .sidebar-content {
@@ -54,6 +60,7 @@ def setup_sidebar():
             }
             </style>
             """, unsafe_allow_html=True)
+        # Social Media Links
         st.markdown("""
             <div style="display: flex; justify-content: space-evenly;">
                 <a href="https://github.com/MGJillaniMughal" target="_blank"><img src="https://img.icons8.com/?size=35&id=63777&format=png&color=000000"/></a>
@@ -70,9 +77,10 @@ def main():
     setup_sidebar()
     # Define navigation options
     choice = st.sidebar.radio("Navigation", [
-        "Upload", "Profiling", "Chat With Data", "Preprocessing", 
-        "Feature Engineering", "Modelling", "Model HyperTuning", 
-        "Model Explainability", "Model Evaluation", "Download", "Contact Us"
+        "Upload", "Profiling", "Chat With Data", "Preprocessing",
+        "Feature Engineering", "Modelling", "Model HyperTuning",
+        "Model Explainability", "Model Evaluation", "Unsupervised Learning",
+        "Download", "Contact Us", "Export Data"
     ])
 
     # Map navigation choices to corresponding functions
@@ -86,12 +94,18 @@ def main():
         "Model HyperTuning": model_hyper_tuning,
         "Model Explainability": model_explainability,
         "Model Evaluation": model_evaluation,
+        "Unsupervised Learning": unsupervised_learning,
         "Download": download_model,
-        "Contact Us": contact_us
+        "Contact Us": contact_us,
+        "Export Data": export_data
     }
 
     # Execute the selected function
-    nav_functions[choice]()
+    if choice in nav_functions:
+        nav_functions[choice]()
+    else:
+        st.error("Navigation choice not recognized!")
+
 
 def upload_data():
     """Handle data upload and store the dataset in session state."""
@@ -106,7 +120,8 @@ def upload_data():
             st.success("File uploaded successfully!")
             st.dataframe(df)
         except Exception as e:
-            st.error(f"An error occurred: {e}")
+            st.error(f"An error occurred while uploading the file: {e}")
+
 
 def perform_profiling():
     """Perform exploratory data analysis using pandas-profiling."""
@@ -118,13 +133,14 @@ def perform_profiling():
     else:
         st.error("Please upload a dataset first!")
 
+
 def chat_with_data():
     """Allow users to chat with their data using a language model."""
     st.title("Chat With Your Data")
     if st.session_state['data_uploaded']:
         df = st.session_state['df']
         st.dataframe(df.head())
-        query = st.text_area("Enter your query about the data", help="You can ask any analytical question, or request visualizations.")
+        query = st.text_area("Enter your query about the data", help="You can ask any analytical question or request visualizations.")
         if st.button("Submit"):
             try:
                 result = chat_with_csv(df, query)
@@ -138,6 +154,7 @@ def chat_with_data():
     else:
         st.error("Please upload a dataset first!")
 
+
 def chat_with_csv(df, query):
     """Interact with the dataset using a language model."""
     groq_api_key = os.getenv('GROQ_API_KEY')
@@ -147,6 +164,7 @@ def chat_with_csv(df, query):
     pandas_ai = SmartDataframe(df, config={"llm": llm})
     result = pandas_ai.chat(query)
     return result
+
 
 def parse_chart_query(query):
     """Parse the user query to detect chart type and columns."""
@@ -182,46 +200,36 @@ def parse_chart_query(query):
 
     return {'chart_type': chart_type, 'x_column': x_column, 'y_column': y_column} if chart_type else None
 
+
 def visualize_data(df, chart_type, x_column, y_column):
     """Visualize data based on parsed query information."""
     st.subheader("Data Visualization")
     create_plot(df, x_column, y_column, chart_type)
 
+
 def create_plot(df, x_column, y_column, plot_type):
-    """Create and save a plot based on the specified parameters."""
-    fig, ax = plt.subplots(figsize=(10, 6))
+    """Create and save a plot based on the specified parameters using Plotly."""
     try:
         if plot_type == "Histogram":
-            sns.histplot(df[x_column], kde=True, ax=ax)
-            ax.set_title(f'Histogram of {x_column}')
+            fig = px.histogram(df, x=x_column, title=f'Histogram of {x_column}')
         elif plot_type == "Scatter Plot":
-            sns.scatterplot(data=df, x=x_column, y=y_column, ax=ax)
-            ax.set_title(f'Scatter Plot between {x_column} and {y_column}')
+            fig = px.scatter(df, x=x_column, y=y_column, title=f'Scatter Plot between {x_column} and {y_column}')
         elif plot_type == "Box Plot":
-            sns.boxplot(x=df[x_column], ax=ax)
-            ax.set_title(f'Box Plot of {x_column}')
+            fig = px.box(df, x=x_column, title=f'Box Plot of {x_column}')
         elif plot_type == "Line Plot":
-            sns.lineplot(data=df, x=x_column, y=y_column, ax=ax)
-            ax.set_title(f'Line Plot between {x_column} and {y_column}')
+            fig = px.line(df, x=x_column, y=y_column, title=f'Line Plot between {x_column} and {y_column}')
         elif plot_type == "Bar Plot":
-            sns.barplot(data=df, x=x_column, y=y_column, ax=ax)
-            ax.set_title(f'Bar Plot between {x_column} and {y_column}')
+            fig = px.bar(df, x=x_column, y=y_column, title=f'Bar Plot between {x_column} and {y_column}')
         elif plot_type == "Heatmap":
-            sns.heatmap(df.corr(), annot=True, fmt='.2f', cmap='coolwarm', ax=ax)
-            ax.set_title('Heatmap of Correlation Matrix')
+            fig = px.imshow(df.corr(), text_auto=True, title='Heatmap of Correlation Matrix')
         elif plot_type == "Pair Plot":
-            sns.pairplot(df)
-            st.pyplot(fig)
-            return
+            fig = px.scatter_matrix(df)
 
-        plot_file_path = f'{EXPORT_PATH}/{x_column if y_column is None else x_column + "_vs_" + y_column}_{plot_type.replace(" ", "_").lower()}.png'
-        plt.savefig(plot_file_path)
-        plt.close(fig)  # Close the figure after saving to file to release memory
-        st.image(plot_file_path)
-        st.success(f"{plot_type} saved at {plot_file_path}")
+        st.plotly_chart(fig)
+        st.success(f"{plot_type} displayed successfully!")
     except Exception as e:
-        plt.close(fig)  # Ensure to close the figure in case of an error as well
         st.error(f"An error occurred while creating the plot: {e}")
+
 
 def preprocess_data():
     """Handle data preprocessing tasks such as missing values and encoding."""
@@ -251,7 +259,7 @@ def preprocess_data():
                 df[col] = le.fit_transform(df[col])
                 st.write("Categorical columns encoded.")
 
-        # Saving processed data
+        # Save processed data
         df.to_csv(PROCESSED_DATA_FILE, index=False)
         st.session_state['processed_data'] = True
         st.session_state['df'] = df
@@ -259,6 +267,7 @@ def preprocess_data():
         st.dataframe(df)
     else:
         st.error("Please upload a dataset first!")
+
 
 def feature_engineering():
     """Feature engineering tasks including creation and selection of features."""
@@ -293,8 +302,25 @@ def feature_engineering():
                 st.dataframe(df.head())
             except Exception as e:
                 st.error(f"An error occurred: {e}")
+
+        # Advanced feature engineering: Polynomial features
+        st.subheader("Advanced Feature Engineering: Polynomial Features")
+        poly_degree = st.slider("Select Degree for Polynomial Features", 2, 5, 2)
+        generate_poly = st.button("Generate Polynomial Features")
+
+        if generate_poly:
+            try:
+                poly = PolynomialFeatures(degree=poly_degree, include_bias=False)
+                num_cols = df.select_dtypes(include=['float64', 'int']).columns.tolist()
+                df_poly = pd.DataFrame(poly.fit_transform(df[num_cols]), columns=poly.get_feature_names(num_cols))
+                df = pd.concat([df, df_poly], axis=1)
+                st.success(f"Polynomial features of degree {poly_degree} created successfully!")
+                st.dataframe(df.head())
+            except Exception as e:
+                st.error(f"An error occurred while creating polynomial features: {e}")
     else:
         st.error("Please preprocess the dataset first!")
+
 
 def perform_modelling():
     """Handle model training for classification, regression, and time series forecasting."""
@@ -321,6 +347,7 @@ def perform_modelling():
     else:
         st.error("Please preprocess the dataset first!")
 
+
 def run_classification_model(df, target, split_ratio):
     """Run and save a classification model."""
     exp_clf = ClassificationExperiment()
@@ -336,6 +363,7 @@ def run_classification_model(df, target, split_ratio):
     exp_clf.save_model(best_model, model_file)
     st.session_state['model_file'] = model_file
     st.success(f"Classification modelling completed! Best model saved as {model_file}")
+
 
 def run_regression_model(df, target, split_ratio):
     """Run and save a regression model."""
@@ -353,6 +381,7 @@ def run_regression_model(df, target, split_ratio):
     st.session_state['model_file'] = model_file
     st.success(f"Regression modelling completed! Best model saved as {model_file}")
 
+
 def run_time_series_model(df, target, split_ratio):
     """Run and save a time series forecasting model."""
     exp_ts = TSForecastingExperiment()
@@ -368,6 +397,7 @@ def run_time_series_model(df, target, split_ratio):
     exp_ts.save_model(best_model, model_file)
     st.session_state['model_file'] = model_file
     st.success(f"Time Series Forecasting modelling completed! Best model saved as {model_file}")
+
 
 def model_hyper_tuning():
     """Handle hyperparameter tuning for classification, regression, and time series models."""
@@ -392,6 +422,7 @@ def model_hyper_tuning():
     else:
         st.error("Please preprocess the dataset first!")
 
+
 def tune_classification_model(df, target, split_ratio):
     """Tune and save a classification model."""
     exp_clf = ClassificationExperiment()
@@ -406,6 +437,7 @@ def tune_classification_model(df, target, split_ratio):
 
     st.dataframe(scores)
     st.success(f"Classification hyper-tuning completed! Best hyper-tuned model saved as {model_file}")
+
 
 def tune_regression_model(df, target, split_ratio):
     """Tune and save a regression model."""
@@ -422,6 +454,7 @@ def tune_regression_model(df, target, split_ratio):
 
     st.success(f"Regression hyper-tuning completed! Best hyper-tuned model saved as {model_file}")
 
+
 def tune_time_series_model(df, target, split_ratio):
     """Tune and save a time series forecasting model."""
     exp_ts = TSForecastingExperiment()
@@ -436,6 +469,7 @@ def tune_time_series_model(df, target, split_ratio):
 
     st.dataframe(scores)
     st.success(f"Time Series hyper-tuning completed! Best hyper-tuned model saved as {model_file}")
+
 
 def model_explainability():
     """Handle model explainability using SHAP values."""
@@ -459,6 +493,7 @@ def model_explainability():
             except Exception as e:
                 st.error(f"An error occurred during model explainability: {e}")
 
+
 def explain_model(df, target, model):
     """Explain model predictions using SHAP values."""
     if hasattr(model, 'steps'):
@@ -475,9 +510,8 @@ def explain_model(df, target, model):
 
     explainer = shap.KernelExplainer(trained_model.predict, df_processed)
     shap_values = explainer.shap_values(df_processed)
-    fig, ax = plt.subplots()
-    shap.summary_plot(shap_values, df_processed, plot_type="bar")
-    st.pyplot(fig)
+    fig = px.bar(x=df_processed.columns, y=shap_values.mean(axis=0), title="Feature Importance")
+    st.plotly_chart(fig)
 
 
 def model_evaluation():
@@ -502,60 +536,220 @@ def model_evaluation():
     else:
         st.error("Please preprocess the dataset and perform modelling first!")
 
+
+def evaluate_regression_model(df, target, model_file):
+    """Evaluate the performance of a regression model."""
+    exp = RegressionExperiment()
+    try:
+        df[target] = pd.to_numeric(df[target], errors='coerce')
+        df.dropna(subset=[target], inplace=True)
+    except Exception as e:
+        st.error(f"Error converting target column to numeric: {e}")
+        return
+
+    exp.setup(data=df, target=target, train_size=0.7, session_id=3, normalize=True)
+    model = exp.load_model(model_file)
+
+    # Evaluate the model
+    exp.evaluate_model(model)
+
+    # Pull evaluation results into a DataFrame
+    eval_results = exp.pull()
+
+    if eval_results is not None and isinstance(eval_results, pd.DataFrame):
+        st.write("Model Evaluation Results:")
+        st.dataframe(eval_results)
+
+        # Extract and display specific metrics
+        try:
+            r2_score = eval_results.loc[eval_results['Metric'] == 'R2', 'Value'].values[0]
+            mae = eval_results.loc[eval_results['Metric'] == 'MAE', 'Value'].values[0]
+            mse = eval_results.loc[eval_results['Metric'] == 'MSE', 'Value'].values[0]
+            rmse = eval_results.loc[eval_results['Metric'] == 'RMSE', 'Value'].values[0]
+            mape = eval_results.loc[eval_results['Metric'] == 'MAPE', 'Value'].values[0]
+
+            st.write(f"R² Score: {r2_score:.4f}")
+            st.write(f"Mean Absolute Error (MAE): {mae:.4f}")
+            st.write(f"Mean Squared Error (MSE): {mse:.4f}")
+            st.write(f"Root Mean Squared Error (RMSE): {rmse:.4f}")
+            st.write(f"Mean Absolute Percentage Error (MAPE): {mape:.4f}%")
+
+        except KeyError as e:
+            st.error(f"Expected evaluation metric not found in results: {e}")
+    else:
+        st.error("Evaluation results are not available or not in expected format.")
+
+    # Plot residuals for visual inspection of model performance
+    plot_residuals(exp, model, df, target)
+
+
+def plot_residuals(exp, model, df, target):
+    """Plot residuals for a regression model."""
+    try:
+        # Getting predictions
+        y_pred_df = exp.predict_model(model, data=df)
+
+        # Extract predictions from the DataFrame
+        if 'Label' in y_pred_df.columns:
+            y_pred = y_pred_df['Label']
+        elif 'Prediction' in y_pred_df.columns:
+            y_pred = y_pred_df['Prediction']
+        else:
+            y_pred = y_pred_df.iloc[:, -1]  # Fallback to the last column for predictions
+
+        y_true = df[target].values
+
+        # Convert predictions and true values to NumPy arrays
+        y_pred = y_pred.to_numpy()
+        y_true = y_true.flatten()  # NumPy arrays have .flatten()
+
+        residuals = y_true - y_pred
+
+        # Plot residuals
+        fig = px.scatter(x=y_true, y=residuals, labels={'x': 'True Values', 'y': 'Residuals'}, title='Residuals Plot')
+        st.plotly_chart(fig)
+
+        # Display residual statistics
+        st.write(f"Mean Residual: {residuals.mean():.4f}")
+        st.write(f"Residual Variance: {residuals.var():.4f}")
+
+    except Exception as e:
+        st.error(f"An error occurred while plotting residuals: {e}")
+
+
 def evaluate_classification_model(df, target, model_file):
     """Evaluate the performance of a classification model."""
     exp = ClassificationExperiment()
     exp.setup(data=df, target=target, train_size=0.7, session_id=3)
     model = exp.load_model(model_file)
+
+    # Evaluate model and display results
     eval_results = exp.evaluate_model(model)
     st.write(eval_results)
+
+    # Display accuracy
+    accuracy = exp.pull()["Accuracy"]
+    st.write(f"Model Accuracy: {accuracy:.2f}%")
+
+    # Plot confusion matrix
     plot_confusion_matrix(exp, model)
 
-def evaluate_regression_model(df, target, model_file):
-    """Evaluate the performance of a regression model."""
-    exp = RegressionExperiment()
-    exp.setup(data=df, target=target, train_size=0.7, session_id=3, normalize=True)
-    model = exp.load_model(model_file)
-    eval_results = exp.evaluate_model(model)
-    st.write(eval_results)
-    plot_residuals(exp, model, df, target)
+
+def plot_confusion_matrix(exp, model):
+    """Plot the confusion matrix for a classification model."""
+    try:
+        fig = exp.plot_model(model, plot='confusion_matrix')
+        st.plotly_chart(fig)
+    except Exception as e:
+        st.error(f"An error occurred while plotting the confusion matrix: {e}")
+
 
 def evaluate_time_series_model(df, target, model_file):
     """Evaluate the performance of a time series forecasting model."""
     exp = TSForecastingExperiment()
     exp.setup(data=df, target=target, train_size=0.7, session_id=3)
     model = exp.load_model(model_file)
+
+    # Evaluate model and display results
     eval_results = exp.evaluate_model(model)
     st.write(eval_results)
+
+    # Plot forecast results
     plot_forecast(exp, model, df, target)
 
-def plot_confusion_matrix(exp, model):
-    """Plot the confusion matrix for a classification model."""
-    try:
-        fig = exp.plot_model(model, plot='confusion_matrix')
-        st.pyplot(fig)
-    except Exception as e:
-        st.error(f"An error occurred while plotting confusion matrix: {e}")
-
-def plot_residuals(exp, model, df, target):
-    """Plot residuals for a regression model."""
-    try:
-        y_pred = exp.predict_model(model, data=df)
-        y_true = df[target]
-        residuals = y_true - y_pred
-        fig = px.scatter(x=y_true, y=residuals, labels={'x': 'True Values', 'y': 'Residuals'})
-        st.plotly_chart(fig)
-    except Exception as e:
-        st.error(f"An error occurred while plotting residuals: {e}")
 
 def plot_forecast(exp, model, df, target):
     """Plot the forecast results for a time series model."""
     try:
-        forecast = exp.predict_model(model, data=df)
-        fig = px.line(df, x=df.index, y=[target, 'Forecast'])
+        forecast_df = exp.predict_model(model, data=df)
+        st.write("Forecast DataFrame:", forecast_df.head())
+
+        # Plot true values vs. forecasted values
+        fig = px.line(df, x=df.index, y=[target], title='Actual vs. Forecasted Values')
+        fig.add_scatter(x=df.index, y=forecast_df['Label'], mode='lines', name='Forecast')
         st.plotly_chart(fig)
+
+        # Optionally, display MAPE, RMSE, etc.
+        st.write(f"MAPE: {forecast_df['MAPE'].mean():.4f}")
+
     except Exception as e:
-        st.error(f"An error occurred while plotting forecast: {e}")
+        st.error(f"An error occurred while plotting the forecast: {e}")
+
+
+def unsupervised_learning():
+    """Handle unsupervised learning tasks such as clustering and PCA."""
+    st.title("Unsupervised Learning")
+    if st.session_state['processed_data']:
+        df = st.session_state['df']
+        st.dataframe(df.head())
+
+        unsupervised_option = st.selectbox("Select Unsupervised Learning Technique", ["Clustering", "PCA"])
+
+        if unsupervised_option == "Clustering":
+            perform_clustering(df)
+        elif unsupervised_option == "PCA":
+            perform_pca(df)
+    else:
+        st.error("Please preprocess the dataset first!")
+
+
+def perform_clustering(df):
+    """Perform clustering using K-Means."""
+    st.subheader("Clustering")
+    num_clusters = st.slider("Select Number of Clusters", 2, 10, 3)
+    selected_features = st.multiselect("Select Features for Clustering", df.columns, default=df.columns.tolist())
+
+    if st.button("Run Clustering"):
+        try:
+            kmeans = KMeans(n_clusters=num_clusters, random_state=42)
+            df['Cluster'] = kmeans.fit_predict(df[selected_features])
+            st.success(f"Clustering completed! Number of clusters: {num_clusters}")
+            st.dataframe(df)
+
+            plot_cluster_results(df, selected_features, 'Cluster')
+        except Exception as e:
+            st.error(f"An error occurred during clustering: {e}")
+
+
+def perform_pca(df):
+    """Perform Principal Component Analysis (PCA)."""
+    st.subheader("Principal Component Analysis (PCA)")
+    selected_features = st.multiselect("Select Features for PCA", df.columns, default=df.columns.tolist())
+    n_components = st.slider("Number of Principal Components", 2, len(selected_features), 2)
+
+    if st.button("Run PCA"):
+        try:
+            scaler = StandardScaler()
+            df_scaled = scaler.fit_transform(df[selected_features])
+            pca = PCA(n_components=n_components)
+            pca_result = pca.fit_transform(df_scaled)
+
+            pca_df = pd.DataFrame(pca_result, columns=[f'PC{i+1}' for i in range(n_components)])
+            st.success(f"PCA completed with {n_components} components!")
+            st.dataframe(pca_df)
+
+            plot_pca_results(pca_df)
+        except Exception as e:
+            st.error(f"An error occurred during PCA: {e}")
+
+
+def plot_cluster_results(df, features, cluster_column):
+    """Visualize the clustering results using scatter plot."""
+    if len(features) >= 2:
+        fig = px.scatter(df, x=features[0], y=features[1], color=cluster_column, title="Clustering Results")
+        st.plotly_chart(fig)
+    else:
+        st.error("Please select at least 2 features for visualization.")
+
+
+def plot_pca_results(pca_df):
+    """Visualize the PCA results using scatter plot."""
+    if pca_df.shape[1] >= 2:
+        fig = px.scatter(pca_df, x='PC1', y='PC2', title="PCA Results")
+        st.plotly_chart(fig)
+    else:
+        st.error("PCA results require at least 2 components for visualization.")
+
 
 def download_model():
     """Allow users to download the trained model."""
@@ -568,6 +762,7 @@ def download_model():
     else:
         st.error("Please perform modelling first to generate a model!")
 
+
 def contact_us():
     """Display contact information."""
     st.title("Contact Us")
@@ -579,6 +774,20 @@ def contact_us():
         - **LinkedIn:** [Jillani Soft Tech](https://www.linkedin.com/in/jillanisofttech/)
     """)
     st.write("We look forward to hearing from you!")
+
+
+def export_data():
+    """Allow users to export the cleaned and processed dataset."""
+    st.title("Export Data")
+    if st.session_state['processed_data']:
+        df = st.session_state['df']
+        with open(EXPORT_DATA_FILE, 'w') as f:
+            df.to_csv(f, index=False)
+        with open(EXPORT_DATA_FILE, 'rb') as f:
+            st.download_button("Download Processed Data", f, file_name=EXPORT_DATA_FILE)
+    else:
+        st.error("Please preprocess the data first!")
+
 
 # Entry point for the Streamlit application
 if __name__ == "__main__":
